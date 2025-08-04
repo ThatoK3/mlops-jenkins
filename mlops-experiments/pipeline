@@ -3,10 +3,10 @@ pipeline {
 
     environment {
         BASE_TAG = "mlops"
-        REGION = "eu-north-1"
-        AMI_ID = "ami-042b4708b1d05f512"
-        SUBNET_ID = "subnet-0fbbd665a7645d096"
-        LAUNCH_TEMPLATE_ID = "lt-03b3e1cee6265e795"
+        REGION = "us-east-1"
+        AMI_ID = "ami-020cba7c55df1f615"
+        SUBNET_ID = "subnet-0bccf87c46ca303ed"
+        LAUNCH_TEMPLATE_ID = "lt-0b64c4af9d5f19bd8"
         KEY_NAME = "mlops-proj"
         ec2_USER = "ubuntu"
     }

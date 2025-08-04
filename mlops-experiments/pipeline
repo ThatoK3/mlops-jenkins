@@ -2,42 +2,115 @@ pipeline {
     agent any
 
     environment {
-        INSTANCE_TAG = "mlops"
-        KEY_NAME = "mlops-proj"
+        BASE_TAG = "mlops"
         REGION = "eu-north-1"
         AMI_ID = "ami-042b4708b1d05f512"
-        SECURITY_GROUP_ID = "sg-0660de3baaef6ba0e"
         SUBNET_ID = "subnet-0fbbd665a7645d096"
         LAUNCH_TEMPLATE_ID = "lt-03b3e1cee6265e795"
-        ec2_USER="ubuntu"
+        KEY_NAME = "mlops-proj"
+        ec2_USER = "ubuntu"
     }
 
     stages {
-        stage('AWS EC2 Workflow') {
+        stage('Generate Unique Tag') {
+            steps {
+                script {
+                    env.RANDOM_SUFFIX = UUID.randomUUID().toString().take(8)
+                    env.INSTANCE_TAG = "${BASE_TAG}-${RANDOM_SUFFIX}"
+                    env.SG_NAME = "${BASE_TAG}-sg-${RANDOM_SUFFIX}"
+                    echo "🔖 Generated tag: ${INSTANCE_TAG}"
+                }
+            }
+        }
+
+        stage('Cleanup Old EC2s & SGs') {
             steps {
                 withAWS(region: "${REGION}", credentials: 'aws-jenkins-creds') {
                     script {
-                        echo "🔍 Checking for existing instance with tag: ${INSTANCE_TAG}"
-                        def instance_id = sh(
+                        def old_instances = sh(
                             script: """
                                 aws ec2 describe-instances \
                                 --region ${REGION} \
-                                --filters "Name=tag:Name,Values=${INSTANCE_TAG}" "Name=instance-state-name,Values=running" \
-                                --query "Reservations[*].Instances[*].InstanceId" \
+                                --filters "Name=tag:Name,Values=${BASE_TAG}-*" "Name=instance-state-name,Values=running" \
+                                --query "Reservations[].Instances[].InstanceId" \
                                 --output text
                             """,
                             returnStdout: true
                         ).trim()
-
-                        if (instance_id) {
-                            echo "🗑️ Terminating existing instance: ${instance_id}"
-                            sh "aws ec2 terminate-instances --region ${REGION} --instance-ids ${instance_id}"
-                            sh "aws ec2 wait instance-terminated --region ${REGION} --instance-ids ${instance_id}"
+                        if (old_instances) {
+                            echo "🗑️ Terminating old EC2s: ${old_instances}"
+                            sh "aws ec2 terminate-instances --region ${REGION} --instance-ids ${old_instances}"
+                            sh "aws ec2 wait instance-terminated --region ${REGION} --instance-ids ${old_instances}"
                         } else {
-                            echo "✅ No running instance found."
+                            echo "✅ No old instances found."
                         }
 
-                        echo "🚀 Launching new EC2 instance..."
+                        def old_sgs = sh(
+                            script: """
+                                aws ec2 describe-security-groups \
+                                --region ${REGION} \
+                                --query "SecurityGroups[?starts_with(GroupName, '${BASE_TAG}-sg-')].GroupId" \
+                                --output text
+                            """,
+                            returnStdout: true
+                        ).trim()
+                        if (old_sgs) {
+                            for (sg_id in old_sgs.tokenize()) {
+                                echo "🛡️ Deleting SG: ${sg_id}"
+                                sh "aws ec2 delete-security-group --region ${REGION} --group-id ${sg_id} || true"
+                            }
+                        } else {
+                            echo "✅ No old SGs found."
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Create Security Group') {
+            steps {
+                withAWS(region: "${REGION}", credentials: 'aws-jenkins-creds') {
+                    script {
+                        env.VPC_ID = sh(
+                            script: """
+                                aws ec2 describe-subnets --region ${REGION} --subnet-ids ${SUBNET_ID} \
+                                --query "Subnets[0].VpcId" --output text
+                            """, returnStdout: true
+                        ).trim()
+
+                        env.SECURITY_GROUP_ID = sh(
+                            script: """
+                                aws ec2 create-security-group \
+                                --region ${REGION} \
+                                --group-name ${SG_NAME} \
+                                --description "MLOps SG for ${INSTANCE_TAG}" \
+                                --vpc-id ${VPC_ID} \
+                                --query 'GroupId' \
+                                --output text
+                            """, returnStdout: true
+                        ).trim()
+
+                        echo "✅ SG created: ${SECURITY_GROUP_ID}"
+
+                        sh """
+                            aws ec2 authorize-security-group-ingress --region ${REGION} --group-id ${SECURITY_GROUP_ID} \
+                            --ip-permissions '[
+                                {"IpProtocol": "tcp", "FromPort": 22, "ToPort": 22, "IpRanges": [{"CidrIp": "0.0.0.0/0"}]},
+                                {"IpProtocol": "tcp", "FromPort": 80, "ToPort": 80, "IpRanges": [{"CidrIp": "0.0.0.0/0"}]},
+                                {"IpProtocol": "tcp", "FromPort": 443, "ToPort": 443, "IpRanges": [{"CidrIp": "0.0.0.0/0"}]},
+                                {"IpProtocol": "tcp", "FromPort": 8888, "ToPort": 8888, "IpRanges": [{"CidrIp": "0.0.0.0/0"}]}
+                            ]'
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('Launch EC2 Instance') {
+            steps {
+                withAWS(region: "${REGION}", credentials: 'aws-jenkins-creds') {
+                    script {
+                        echo "🚀 Launching EC2 instance..."
                         env.INSTANCE_ID = sh(
                             script: """
                                 aws ec2 run-instances \
@@ -49,12 +122,9 @@ pipeline {
                                 --block-device-mappings '[{
                                     "DeviceName": "/dev/sda1",
                                     "Ebs": {
-                                        "Encrypted": false,
                                         "DeleteOnTermination": true,
-                                        "Iops": 3000,
                                         "VolumeSize": 30,
-                                        "VolumeType": "gp3",
-                                        "Throughput": 125
+                                        "VolumeType": "gp3"
                                     }
                                 }]' \
                                 --network-interfaces '[{
@@ -62,21 +132,10 @@ pipeline {
                                     "DeleteOnTermination": true,
                                     "AssociatePublicIpAddress": true,
                                     "DeviceIndex": 0,
-                                    "InterfaceType": "interface",
-                                    "NetworkCardIndex": 0,
                                     "Groups": ["${SECURITY_GROUP_ID}"]
                                 }]' \
                                 --launch-template '{"LaunchTemplateId":"${LAUNCH_TEMPLATE_ID}","Version":"1"}' \
-                                --hibernation-options '{"Configured":false}' \
-                                --monitoring '{"Enabled":false}' \
-                                --credit-specification '{"CpuCredits":"unlimited"}' \
-                                --capacity-reservation-specification '{"CapacityReservationPreference":"open"}' \
                                 --tag-specifications 'ResourceType=instance,Tags=[{Key=Name,Value=${INSTANCE_TAG}}]' \
-                                --enclave-options '{"Enabled":false}' \
-                                --metadata-options '{"HttpEndpoint":"enabled","HttpProtocolIpv6":"disabled","HttpPutResponseHopLimit":2,"HttpTokens":"required","InstanceMetadataTags":"disabled"}' \
-                                --placement '{"AvailabilityZone":"eu-north-1a","Tenancy":"default"}' \
-                                --private-dns-name-options '{"HostnameType":"ip-name","EnableResourceNameDnsARecord":true,"EnableResourceNameDnsAAAARecord":false}' \
-                                --maintenance-options '{"AutoRecovery":"default"}' \
                                 --count 1 \
                                 --query "Instances[0].InstanceId" \
                                 --output text
@@ -84,23 +143,23 @@ pipeline {
                             returnStdout: true
                         ).trim()
 
-                        echo "✅ EC2 Instance launched: ${env.INSTANCE_ID}"
+                        echo "✅ Launched instance: ${INSTANCE_ID}"
 
-                        echo "⏳ Waiting for instance to be in running state..."
-                        sh "aws ec2 wait instance-running --region ${REGION} --instance-ids ${env.INSTANCE_ID}"
+                        echo "⏳ Waiting for instance to be running..."
+                        sh "aws ec2 wait instance-running --region ${REGION} --instance-ids ${INSTANCE_ID}"
 
                         env.INSTANCE_IP = sh(
                             script: """
                                 aws ec2 describe-instances \
                                 --region ${REGION} \
-                                --instance-ids ${env.INSTANCE_ID} \
+                                --instance-ids ${INSTANCE_ID} \
                                 --query "Reservations[0].Instances[0].PublicIpAddress" \
                                 --output text
                             """,
                             returnStdout: true
                         ).trim()
 
-                        echo "🌐 Instance public IP: ${env.INSTANCE_IP}"
+                        echo "🌐 Instance public IP: ${INSTANCE_IP}"
                     }
                 }
             }
@@ -110,15 +169,13 @@ pipeline {
             steps {
                 withCredentials([file(credentialsId: 'mlops-ssh-key', variable: 'PEM_PATH')]) {
                     script {
-                        echo "🔐 Using secure PEM to connect via SSH"
+                        echo "🔐 Connecting via SSH..."
                         sh """
                             chmod 400 ${PEM_PATH}
-                            ssh -o StrictHostKeyChecking=no -i ${PEM_PATH} ${ec2_USER}@${env.INSTANCE_IP} '
-                                echo "📁 Creating directory /tmp/mlops-demo"
-                                mkdir -p /tmp/mlops-demo
-
-                                echo "📄 Listing contents:"
-                                ls -la /tmp/mlops-demo
+                            ssh -o StrictHostKeyChecking=no -i ${PEM_PATH} ${ec2_USER}@${INSTANCE_IP} '
+                                echo "📁 Creating directory /tmp/mlops-demo-${RANDOM_SUFFIX}"
+                                mkdir -p /tmp/mlops-demo-${RANDOM_SUFFIX}
+                                ls -la /tmp/mlops-demo-${RANDOM_SUFFIX}
                             '
                         """
                     }
@@ -129,10 +186,10 @@ pipeline {
 
     post {
         always {
-            echo "✔️ Pipeline finished."
+            echo "✔️ Pipeline finished. Instance: ${INSTANCE_ID} | SG: ${SECURITY_GROUP_ID}"
         }
         failure {
-            echo "❌ Pipeline failed."
+            echo "❌ Pipeline failed. Check logs above."
         }
     }
 }

@@ -1,0 +1,138 @@
+pipeline {
+    agent any
+
+    environment {
+        INSTANCE_TAG = "mlops"
+        KEY_NAME = "mlops-proj"
+        REGION = "eu-north-1"
+        AMI_ID = "ami-042b4708b1d05f512"
+        SECURITY_GROUP_ID = "sg-0660de3baaef6ba0e"
+        SUBNET_ID = "subnet-0fbbd665a7645d096"
+        LAUNCH_TEMPLATE_ID = "lt-03b3e1cee6265e795"
+        ec2_USER="ubuntu"
+    }
+
+    stages {
+        stage('AWS EC2 Workflow') {
+            steps {
+                withAWS(region: "${REGION}", credentials: 'aws-jenkins-creds') {
+                    script {
+                        echo "🔍 Checking for existing instance with tag: ${INSTANCE_TAG}"
+                        def instance_id = sh(
+                            script: """
+                                aws ec2 describe-instances \
+                                --region ${REGION} \
+                                --filters "Name=tag:Name,Values=${INSTANCE_TAG}" "Name=instance-state-name,Values=running" \
+                                --query "Reservations[*].Instances[*].InstanceId" \
+                                --output text
+                            """,
+                            returnStdout: true
+                        ).trim()
+
+                        if (instance_id) {
+                            echo "🗑️ Terminating existing instance: ${instance_id}"
+                            sh "aws ec2 terminate-instances --region ${REGION} --instance-ids ${instance_id}"
+                            sh "aws ec2 wait instance-terminated --region ${REGION} --instance-ids ${instance_id}"
+                        } else {
+                            echo "✅ No running instance found."
+                        }
+
+                        echo "🚀 Launching new EC2 instance..."
+                        env.INSTANCE_ID = sh(
+                            script: """
+                                aws ec2 run-instances \
+                                --region ${REGION} \
+                                --image-id "${AMI_ID}" \
+                                --instance-type "t3.large" \
+                                --instance-initiated-shutdown-behavior "stop" \
+                                --key-name "${KEY_NAME}" \
+                                --block-device-mappings '[{
+                                    "DeviceName": "/dev/sda1",
+                                    "Ebs": {
+                                        "Encrypted": false,
+                                        "DeleteOnTermination": true,
+                                        "Iops": 3000,
+                                        "VolumeSize": 30,
+                                        "VolumeType": "gp3",
+                                        "Throughput": 125
+                                    }
+                                }]' \
+                                --network-interfaces '[{
+                                    "SubnetId": "${SUBNET_ID}",
+                                    "DeleteOnTermination": true,
+                                    "AssociatePublicIpAddress": true,
+                                    "DeviceIndex": 0,
+                                    "InterfaceType": "interface",
+                                    "NetworkCardIndex": 0,
+                                    "Groups": ["${SECURITY_GROUP_ID}"]
+                                }]' \
+                                --launch-template '{"LaunchTemplateId":"${LAUNCH_TEMPLATE_ID}","Version":"1"}' \
+                                --hibernation-options '{"Configured":false}' \
+                                --monitoring '{"Enabled":false}' \
+                                --credit-specification '{"CpuCredits":"unlimited"}' \
+                                --capacity-reservation-specification '{"CapacityReservationPreference":"open"}' \
+                                --tag-specifications 'ResourceType=instance,Tags=[{Key=Name,Value=${INSTANCE_TAG}}]' \
+                                --enclave-options '{"Enabled":false}' \
+                                --metadata-options '{"HttpEndpoint":"enabled","HttpProtocolIpv6":"disabled","HttpPutResponseHopLimit":2,"HttpTokens":"required","InstanceMetadataTags":"disabled"}' \
+                                --placement '{"AvailabilityZone":"eu-north-1a","Tenancy":"default"}' \
+                                --private-dns-name-options '{"HostnameType":"ip-name","EnableResourceNameDnsARecord":true,"EnableResourceNameDnsAAAARecord":false}' \
+                                --maintenance-options '{"AutoRecovery":"default"}' \
+                                --count 1 \
+                                --query "Instances[0].InstanceId" \
+                                --output text
+                            """,
+                            returnStdout: true
+                        ).trim()
+
+                        echo "✅ EC2 Instance launched: ${env.INSTANCE_ID}"
+
+                        echo "⏳ Waiting for instance to be in running state..."
+                        sh "aws ec2 wait instance-running --region ${REGION} --instance-ids ${env.INSTANCE_ID}"
+
+                        env.INSTANCE_IP = sh(
+                            script: """
+                                aws ec2 describe-instances \
+                                --region ${REGION} \
+                                --instance-ids ${env.INSTANCE_ID} \
+                                --query "Reservations[0].Instances[0].PublicIpAddress" \
+                                --output text
+                            """,
+                            returnStdout: true
+                        ).trim()
+
+                        echo "🌐 Instance public IP: ${env.INSTANCE_IP}"
+                    }
+                }
+            }
+        }
+
+        stage('SSH and Create Directory') {
+            steps {
+                withCredentials([file(credentialsId: 'mlops-ssh-key', variable: 'PEM_PATH')]) {
+                    script {
+                        echo "🔐 Using secure PEM to connect via SSH"
+                        sh """
+                            chmod 400 ${PEM_PATH}
+                            ssh -o StrictHostKeyChecking=no -i ${PEM_PATH} ${ec2_USER}@${env.INSTANCE_IP} '
+                                echo "📁 Creating directory /tmp/mlops-demo"
+                                mkdir -p /tmp/mlops-demo
+
+                                echo "📄 Listing contents:"
+                                ls -la /tmp/mlops-demo
+                            '
+                        """
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            echo "✔️ Pipeline finished."
+        }
+        failure {
+            echo "❌ Pipeline failed."
+        }
+    }
+}

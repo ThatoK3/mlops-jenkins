@@ -211,7 +211,7 @@ pipeline {
                     script {
                         echo "⌛ Waiting for instance to reboot and become reachable..."
                         retry(10) {
-                            sleep(time: 15, unit: 'SECONDS')
+                            sleep(time: 20, unit: 'SECONDS')
                             sh """
                                 ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -i ${PEM_PATH} ${ec2_USER}@${INSTANCE_IP} 'echo "✅ Server is back online!"'
                             """
@@ -230,12 +230,114 @@ pipeline {
                             ssh -o StrictHostKeyChecking=no -i ${PEM_PATH} ${ec2_USER}@${INSTANCE_IP} '
                                 echo "✅ Docker Version:"
                                 docker --version
+                                exit
                             '
                         """
                     }
                 }
             }
         }
+
+
+
+
+        stage('SSH and Git Clone') {
+            steps {
+                withCredentials([file(credentialsId: 'mlops-ssh-key', variable: 'PEM_PATH')]) {
+                    script {
+
+                        env.REPO_DIR="mlops-experiments"
+
+                        echo "🔐 Connecting via SSH and cloning Git repository..."
+                        sh """
+                            ssh -o StrictHostKeyChecking=no -i ${PEM_PATH} ${ec2_USER}@${INSTANCE_IP} '
+                                set -e
+                                
+                                REPO_URL="https://github.com/ThatoK3/mlops-experiments.git"
+                                
+
+                                if [ ! -d "${REPO_DIR}" ]; then
+                                    echo "📥 Cloning repository..."
+                                    git clone \$REPO_URL
+                                else
+                                    echo "✅ Repo already cloned."
+                                fi
+
+                                if [ -d "${REPO_DIR}/.git" ]; then
+                                    echo "📁 Changing to repo directory and verifying..."
+                                    cd ${REPO_DIR}
+                                    git status
+                                else
+                                    echo "❌ Repository clone failed or invalid."
+                                    exit 1
+                                fi
+                            '
+                        """
+                    }
+                }
+            }
+        }
+
+
+
+
+        stage('Write .env via SSH') {
+            steps {
+                withCredentials([
+                    file(credentialsId: 'mlops-ssh-key', variable: 'PEM_PATH'),
+                    usernamePassword(credentialsId: 'mlflow-experiments-db-creds', usernameVariable: 'MYSQL_USER', passwordVariable: 'MYSQL_PASSWORD'),
+                    usernamePassword(credentialsId: 'mlflow-experiments-db-root-user-creds', usernameVariable: 'MYSQL_ROOT_USER', passwordVariable: 'MYSQL_ROOT_PASSWORD')
+                ]) {
+                    script {
+                        def envContent = """
+                            MYSQL_USER=${MYSQL_USER}
+                            MYSQL_PASSWORD=${MYSQL_PASSWORD}
+                            MYSQL_ROOT_USER=${MYSQL_ROOT_USER}
+                            MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
+                            MYSQL_HOST=${INSTANCE_IP}
+                            MYSQL_PORT=3306
+                            MYSQL_DB=mlflow_db
+                        """.stripIndent().trim()
+
+                        sh """
+                            ssh -o StrictHostKeyChecking=no -i ${PEM_PATH} ${ec2_USER}@${INSTANCE_IP} 'bash -s' <<EOF
+                            cd ${REPO_DIR}
+                            cat <<EOT > .env
+${envContent}
+EOT
+                            chmod 600 .env
+EOF
+                        """
+                    }
+                }
+            }
+        }
+
+
+
+
+
+        stage('SSH and Run Experiments Server') {
+            steps {
+                withCredentials([file(credentialsId: 'mlops-ssh-key', variable: 'PEM_PATH')]) {
+                    script {
+                        echo "🔐 Connecting via SSH and running experiments server..."
+                        sh """
+                            ssh -o StrictHostKeyChecking=no -i ${PEM_PATH} ${ec2_USER}@${INSTANCE_IP} '
+                                set -e
+
+                                cd ${REPO_DIR}
+
+                                sudo bash run_exp_containers.sh
+                            '
+                        """
+                    }
+                }
+            }
+        }
+
+
+
     }
 
     post {

@@ -100,7 +100,8 @@ pipeline {
                                 {"IpProtocol": "tcp", "FromPort": 22, "ToPort": 22, "IpRanges": [{"CidrIp": "0.0.0.0/0"}]},
                                 {"IpProtocol": "tcp", "FromPort": 80, "ToPort": 80, "IpRanges": [{"CidrIp": "0.0.0.0/0"}]},
                                 {"IpProtocol": "tcp", "FromPort": 443, "ToPort": 443, "IpRanges": [{"CidrIp": "0.0.0.0/0"}]},
-                                {"IpProtocol": "tcp", "FromPort": 8888, "ToPort": 8888, "IpRanges": [{"CidrIp": "0.0.0.0/0"}]}
+                                {"IpProtocol": "tcp", "FromPort": 8888, "ToPort": 8888, "IpRanges": [{"CidrIp": "0.0.0.0/0"}]},
+                                {"IpProtocol": "tcp", "FromPort": 5000, "ToPort": 5000, "IpRanges": [{"CidrIp": "0.0.0.0/0"}]}
                             ]'
                         """
                     }
@@ -162,6 +163,19 @@ pipeline {
                         ).trim()
 
                         echo "🌐 Instance public IP: ${INSTANCE_IP}"
+
+                        env.INSTANCE_PRIVATE_IP = sh(
+                            script: """
+                                aws ec2 describe-instances \
+                                --region ${REGION} \
+                                --instance-ids ${INSTANCE_ID} \
+                                --query "Reservations[0].Instances[0].PrivateIpAddress" \
+                                --output text
+                            """,
+                            returnStdout: true
+                        ).trim()
+
+                        echo "Instance private IP: ${INSTANCE_PRIVATE_IP}"
                     }
                 }
             }
@@ -294,7 +308,7 @@ pipeline {
                             MYSQL_PASSWORD=${MYSQL_PASSWORD}
                             MYSQL_ROOT_USER=${MYSQL_ROOT_USER}
                             MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
-                            MYSQL_HOST=${INSTANCE_IP}
+                            MYSQL_HOST=${INSTANCE_PRIVATE_IP}
                             MYSQL_PORT=3306
                             MYSQL_DB=mlflow_db
                         """.stripIndent().trim()
@@ -335,6 +349,57 @@ EOF
                 }
             }
         }
+
+
+        stage('Check Jupyter Nb Availability') {
+            steps {
+                script {
+                    def SERVICE_NAME = "Jupyter Nb Server" 
+                    def PORT = 8888                          
+                    def targetUrl = "http://${INSTANCE_IP}:${PORT}/login"
+
+                    echo "🔍 Checking if ${SERVICE_NAME} at ${targetUrl} is reachable..."
+
+                    retry(5) {
+                        sleep(time: 5, unit: 'SECONDS')
+                        sh """
+                            STATUS_CODE=\$(curl -o /dev/null -s -w "%{http_code}" --max-time 5 ${targetUrl})
+                            if [ "\$STATUS_CODE" != "200" ]; then
+                                echo "❌ ${SERVICE_NAME} not available yet (HTTP \$STATUS_CODE)"
+                                exit 1
+                            fi
+                            echo "✅ ${SERVICE_NAME} is accessible (HTTP \$STATUS_CODE)"
+                        """
+                    }
+                }
+            }
+        }
+
+
+        stage('Check Mlflow Availability') {
+            steps {
+                script {
+                    def SERVICE_NAME = "MLflow Tracking Server" 
+                    def PORT = 5000                           
+                    def targetUrl = "http://${INSTANCE_IP}:${PORT}"
+
+                    echo "🔍 Checking if ${SERVICE_NAME} at ${targetUrl} is reachable..."
+
+                    retry(5) {
+                        sleep(time: 5, unit: 'SECONDS')
+                        sh """
+                            STATUS_CODE=\$(curl -o /dev/null -s -w "%{http_code}" --max-time 5 ${targetUrl})
+                            if [ "\$STATUS_CODE" != "200" ]; then
+                                echo "❌ ${SERVICE_NAME} not available yet (HTTP \$STATUS_CODE)"
+                                exit 1
+                            fi
+                            echo "✅ ${SERVICE_NAME} is accessible (HTTP \$STATUS_CODE)"
+                        """
+                    }
+                }
+            }
+        }
+
 
 
 

@@ -100,7 +100,8 @@ pipeline {
                                 {"IpProtocol": "tcp", "FromPort": 22, "ToPort": 22, "IpRanges": [{"CidrIp": "0.0.0.0/0"}]},
                                 {"IpProtocol": "tcp", "FromPort": 80, "ToPort": 80, "IpRanges": [{"CidrIp": "0.0.0.0/0"}]},
                                 {"IpProtocol": "tcp", "FromPort": 443, "ToPort": 443, "IpRanges": [{"CidrIp": "0.0.0.0/0"}]},
-                                {"IpProtocol": "tcp", "FromPort": 8888, "ToPort": 8888, "IpRanges": [{"CidrIp": "0.0.0.0/0"}]}
+                                {"IpProtocol": "tcp", "FromPort": 8888, "ToPort": 8888, "IpRanges": [{"CidrIp": "0.0.0.0/0"}]},
+                                {"IpProtocol": "tcp", "FromPort": 5000, "ToPort": 5000, "IpRanges": [{"CidrIp": "0.0.0.0/0"}]}
                             ]'
                         """
                     }
@@ -162,6 +163,19 @@ pipeline {
                         ).trim()
 
                         echo "🌐 Instance public IP: ${INSTANCE_IP}"
+
+                        env.INSTANCE_PRIVATE_IP = sh(
+                            script: """
+                                aws ec2 describe-instances \
+                                --region ${REGION} \
+                                --instance-ids ${INSTANCE_ID} \
+                                --query "Reservations[0].Instances[0].PrivateIpAddress" \
+                                --output text
+                            """,
+                            returnStdout: true
+                        ).trim()
+
+                        echo "Instance private IP: ${INSTANCE_PRIVATE_IP}"
                     }
                 }
             }
@@ -211,7 +225,7 @@ pipeline {
                     script {
                         echo "⌛ Waiting for instance to reboot and become reachable..."
                         retry(10) {
-                            sleep(time: 15, unit: 'SECONDS')
+                            sleep(time: 20, unit: 'SECONDS')
                             sh """
                                 ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -i ${PEM_PATH} ${ec2_USER}@${INSTANCE_IP} 'echo "✅ Server is back online!"'
                             """
@@ -230,12 +244,165 @@ pipeline {
                             ssh -o StrictHostKeyChecking=no -i ${PEM_PATH} ${ec2_USER}@${INSTANCE_IP} '
                                 echo "✅ Docker Version:"
                                 docker --version
+                                exit
                             '
                         """
                     }
                 }
             }
         }
+
+
+
+
+        stage('SSH and Git Clone') {
+            steps {
+                withCredentials([file(credentialsId: 'mlops-ssh-key', variable: 'PEM_PATH')]) {
+                    script {
+
+                        env.REPO_DIR="mlops-experiments"
+
+                        echo "🔐 Connecting via SSH and cloning Git repository..."
+                        sh """
+                            ssh -o StrictHostKeyChecking=no -i ${PEM_PATH} ${ec2_USER}@${INSTANCE_IP} '
+                                set -e
+                                
+                                REPO_URL="https://github.com/ThatoK3/mlops-experiments.git"
+                                
+
+                                if [ ! -d "${REPO_DIR}" ]; then
+                                    echo "📥 Cloning repository..."
+                                    git clone \$REPO_URL
+                                else
+                                    echo "✅ Repo already cloned."
+                                fi
+
+                                if [ -d "${REPO_DIR}/.git" ]; then
+                                    echo "📁 Changing to repo directory and verifying..."
+                                    cd ${REPO_DIR}
+                                    git status
+                                else
+                                    echo "❌ Repository clone failed or invalid."
+                                    exit 1
+                                fi
+                            '
+                        """
+                    }
+                }
+            }
+        }
+
+
+
+
+        stage('Write .env via SSH') {
+            steps {
+                withCredentials([
+                    file(credentialsId: 'mlops-ssh-key', variable: 'PEM_PATH'),
+                    usernamePassword(credentialsId: 'mlflow-experiments-db-creds', usernameVariable: 'MYSQL_USER', passwordVariable: 'MYSQL_PASSWORD'),
+                    usernamePassword(credentialsId: 'mlflow-experiments-db-root-user-creds', usernameVariable: 'MYSQL_ROOT_USER', passwordVariable: 'MYSQL_ROOT_PASSWORD')
+                ]) {
+                    script {
+                        def envContent = """
+                            MYSQL_USER=${MYSQL_USER}
+                            MYSQL_PASSWORD=${MYSQL_PASSWORD}
+                            MYSQL_ROOT_USER=${MYSQL_ROOT_USER}
+                            MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
+                            MYSQL_HOST=${INSTANCE_PRIVATE_IP}
+                            MYSQL_PORT=3306
+                            MYSQL_DB=mlflow_db
+                        """.stripIndent().trim()
+
+                        sh """
+                            ssh -o StrictHostKeyChecking=no -i ${PEM_PATH} ${ec2_USER}@${INSTANCE_IP} 'bash -s' <<EOF
+                            cd ${REPO_DIR}
+                            cat <<EOT > .env
+${envContent}
+EOT
+                            chmod 600 .env
+EOF
+                        """
+                    }
+                }
+            }
+        }
+
+
+
+
+
+        stage('SSH and Run Experiments Server') {
+            steps {
+                withCredentials([file(credentialsId: 'mlops-ssh-key', variable: 'PEM_PATH')]) {
+                    script {
+                        echo "🔐 Connecting via SSH and running experiments server..."
+                        sh """
+                            ssh -o StrictHostKeyChecking=no -i ${PEM_PATH} ${ec2_USER}@${INSTANCE_IP} '
+                                set -e
+
+                                cd ${REPO_DIR}
+
+                                sudo bash run_exp_containers.sh
+                            '
+                        """
+                    }
+                }
+            }
+        }
+
+
+        stage('Check Jupyter Nb Availability') {
+            steps {
+                script {
+                    def SERVICE_NAME = "Jupyter Nb Server" 
+                    def PORT = 8888                          
+                    def targetUrl = "http://${INSTANCE_IP}:${PORT}/login"
+
+                    echo "🔍 Checking if ${SERVICE_NAME} at ${targetUrl} is reachable..."
+
+                    retry(5) {
+                        sleep(time: 5, unit: 'SECONDS')
+                        sh """
+                            STATUS_CODE=\$(curl -o /dev/null -s -w "%{http_code}" --max-time 5 ${targetUrl})
+                            if [ "\$STATUS_CODE" != "200" ]; then
+                                echo "❌ ${SERVICE_NAME} not available yet (HTTP \$STATUS_CODE)"
+                                exit 1
+                            fi
+                            echo "✅ ${SERVICE_NAME} is accessible (HTTP \$STATUS_CODE)"
+                        """
+                    }
+                }
+            }
+        }
+
+
+        stage('Check Mlflow Availability') {
+            steps {
+                script {
+                    def SERVICE_NAME = "MLflow Tracking Server" 
+                    def PORT = 5000                           
+                    def targetUrl = "http://${INSTANCE_IP}:${PORT}"
+
+                    echo "🔍 Checking if ${SERVICE_NAME} at ${targetUrl} is reachable..."
+
+                    retry(5) {
+                        sleep(time: 5, unit: 'SECONDS')
+                        sh """
+                            STATUS_CODE=\$(curl -o /dev/null -s -w "%{http_code}" --max-time 5 ${targetUrl})
+                            if [ "\$STATUS_CODE" != "200" ]; then
+                                echo "❌ ${SERVICE_NAME} not available yet (HTTP \$STATUS_CODE)"
+                                exit 1
+                            fi
+                            echo "✅ ${SERVICE_NAME} is accessible (HTTP \$STATUS_CODE)"
+                        """
+                    }
+                }
+            }
+        }
+
+
+
+
     }
 
     post {

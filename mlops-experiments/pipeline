@@ -235,6 +235,7 @@ pipeline {
             }
         }
 
+
         stage('SSH and Test') {
             steps {
                 withCredentials([file(credentialsId: 'mlops-ssh-key', variable: 'PEM_PATH')]) {
@@ -253,6 +254,22 @@ pipeline {
         }
 
 
+        stage('Install mysql client') {
+            steps {
+                withCredentials([file(credentialsId: 'mlops-ssh-key', variable: 'PEM_PATH')]) {
+                    script {
+                        echo "🔐 Installing mysql-client on remote EC2..."
+                        sh """
+                            ssh -o StrictHostKeyChecking=no -i ${PEM_PATH} ${ec2_USER}@${INSTANCE_IP} << 'EOF'
+                                set -e
+                                echo "📦 Installing mysql-client..."
+                                sudo apt install mysql-client -y                               
+                            
+                        """ // Ignore failure to keep pipeline alive
+                    }
+                }
+            }
+        }
 
 
         stage('SSH and Git Clone') {
@@ -401,13 +418,31 @@ EOF
         }
 
 
+        stage('SSH and Upload backed up mlflow db data') {
+            steps {
+                withCredentials([file(credentialsId: 'mlops-ssh-key', variable: 'PEM_PATH')]) {
+                    script {
+                        echo "Uloading data..."
+                        sh """
+                            ssh -o StrictHostKeyChecking=no -i ${PEM_PATH} ${ec2_USER}@${INSTANCE_IP} '
+                                cd ${REPO_DIR}
+                                bash retrieve_mlflow_db_backup.sh 
+                                exit
+                            '
+                        """
+                    }
+                }
+            }
+        }
+
+
 
 
     }
 
     post {
         always {
-            echo "✔️ Pipeline finished. Instance: ${INSTANCE_ID} | SG: ${SECURITY_GROUP_ID}"
+            echo "✔️ Pipeline finished. Instance: ${INSTANCE_ID} }"
         }
         failure {
             echo "❌ Pipeline failed. Check logs above."

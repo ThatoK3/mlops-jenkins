@@ -97,10 +97,10 @@ pipeline {
                         sh """
                             aws ec2 authorize-security-group-ingress --region ${REGION} --group-id ${SECURITY_GROUP_ID} \
                             --ip-permissions '[
-                                {"IpProtocol": "tcp", "FromPort": 22, "ToPort": 22, "IpRanges": [{"CidrIp": "54.236.64.223/32"}]},
-                                {"IpProtocol": "tcp", "FromPort": 80, "ToPort": 80, "IpRanges": [{"CidrIp": "54.236.64.223/32"}]},
-                                {"IpProtocol": "tcp", "FromPort": 443, "ToPort": 443, "IpRanges": [{"CidrIp": "54.236.64.223/32"}]},
-                                {"IpProtocol": "tcp", "FromPort": 8000, "ToPort": 8000, "IpRanges": [{"CidrIp": "54.236.64.223/32"}]}
+                                {"IpProtocol": "tcp", "FromPort": 22, "ToPort": 22, "IpRanges": [{"CidrIp": "public_ip/32"}]},
+                                {"IpProtocol": "tcp", "FromPort": 80, "ToPort": 80, "IpRanges": [{"CidrIp": "public_ip/32"}]},
+                                {"IpProtocol": "tcp", "FromPort": 443, "ToPort": 443, "IpRanges": [{"CidrIp": "public_ip/32"}]},
+                                {"IpProtocol": "tcp", "FromPort": 8000, "ToPort": 8000, "IpRanges": [{"CidrIp": "public_ip/32"}]}
                             ]'
                         """
                     }

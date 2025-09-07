@@ -97,10 +97,14 @@ pipeline {
                         sh """
                             aws ec2 authorize-security-group-ingress --region ${REGION} --group-id ${SECURITY_GROUP_ID} \
                             --ip-permissions '[
-                                {"IpProtocol": "tcp", "FromPort": 22, "ToPort": 22, "IpRanges": [{"CidrIp": "public_ip/32"}]},
-                                {"IpProtocol": "tcp", "FromPort": 80, "ToPort": 80, "IpRanges": [{"CidrIp": "public_ip/32"}]},
-                                {"IpProtocol": "tcp", "FromPort": 443, "ToPort": 443, "IpRanges": [{"CidrIp": "public_ip/32"}]},
-                                {"IpProtocol": "tcp", "FromPort": 8000, "ToPort": 8000, "IpRanges": [{"CidrIp": "public_ip/32"}]}
+                                {"IpProtocol": "tcp", "FromPort": 22, "ToPort": 22, "IpRanges": [{"CidrIp": "54.236.64.223/32"}]},
+                                {"IpProtocol": "tcp", "FromPort": 22, "ToPort": 22, "IpRanges": [{"CidrIp": "3.82.125.25/32"}]},
+                                {"IpProtocol": "tcp", "FromPort": 22, "ToPort": 22, "IpRanges": [{"CidrIp": "44.212.42.254/32"}]},
+                                {"IpProtocol": "tcp", "FromPort": 80, "ToPort": 80, "IpRanges": [{"CidrIp": "54.236.64.223/32"}]},
+                                {"IpProtocol": "tcp", "FromPort": 443, "ToPort": 443, "IpRanges": [{"CidrIp": "54.236.64.223/32"}]},
+                                {"IpProtocol": "tcp", "FromPort": 8000, "ToPort": 8000, "IpRanges": [{"CidrIp": "44.212.42.254/32"}]},
+                                {"IpProtocol": "tcp", "FromPort": 8000, "ToPort": 8000, "IpRanges": [{"CidrIp": "54.236.64.223/32"}]},
+                                {"IpProtocol": "tcp", "FromPort": 8000, "ToPort": 8000, "IpRanges": [{"CidrIp": "3.82.125.25/32"}]}
                             ]'
                         """
                     }
@@ -311,86 +315,57 @@ pipeline {
 
 
 
-        stage('Write first .env via SSH') {
+        stage('Write .env via SSH') {
             steps {
                 withCredentials([
                     file(credentialsId: 'mlops-ssh-key', variable: 'PEM_PATH'),
                     usernamePassword(credentialsId: 'mlflow-experiments-db-creds', usernameVariable: 'MYSQL_USER', passwordVariable: 'MYSQL_PASSWORD'),
                     usernamePassword(credentialsId: 'mlflow-experiments-db-root-user-creds', usernameVariable: 'MYSQL_ROOT_USER', passwordVariable: 'MYSQL_ROOT_PASSWORD')
                 ]) {
-                    script {
-                        def envContent = """
-                            MYSQL_USER=${MYSQL_USER}
-                            MYSQL_PASSWORD=${MYSQL_PASSWORD}
-                            MYSQL_ROOT_USER=${MYSQL_ROOT_USER}
-                            MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
-                            MYSQL_HOST=${INSTANCE_PRIVATE_IP}
-                            MYSQL_PORT=3306
-                            MYSQL_DB=stroke_predictions
-                        """.stripIndent().trim()
+                    withAWS(region: 'us-east-1', credentials: 'aws-jenkins-creds') {
+                        script {
+                            // Get AWS credentials from environment variables provided by withAWS
+                            def awsAccessKey = env.AWS_ACCESS_KEY_ID ?: ''
+                            def awsSecretKey = env.AWS_SECRET_ACCESS_KEY ?: ''
+                            
+                            def envContent = """
+# MySQL
+MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
+MYSQL_USER=${MYSQL_USER}
+MYSQL_PASSWORD=${MYSQL_PASSWORD}
+MYSQL_HOST=${INSTANCE_PRIVATE_IP}
+MYSQL_PORT=3306
+MYSQL_DB_NAME=stroke_predictions
 
-                        sh """
-                            ssh -o StrictHostKeyChecking=no -i ${PEM_PATH} ${ec2_USER}@${INSTANCE_IP} 'bash -s' <<EOF
-                            cd ${REPO_DIR}
-                            cat <<EOT > .env
+# AWS creds
+AWS_ACCESS_KEY_ID=${awsAccessKey}
+AWS_SECRET_ACCESS_KEY=${awsSecretKey}
+AWS_DEFAULT_REGION=us-east-1
+
+# Paths (relative to project root)
+JDBC_SINK_JARS=./kconnect-jdbc-sink-jars
+S3_SINK_JARS=./kconnect-s3-sink-jars
+CONNECT_TRANSFORMS=./confluentic-connect-transforms
+FAST_API=./fast_api
+MODELS=./models
+NOTEBOOKS=./notebooks
+SAVED_MODEL=./models/Logistic_Regression.pkl
+        """.stripIndent().trim()
+
+                            sh """
+                                ssh -o StrictHostKeyChecking=no -i ${PEM_PATH} ${ec2_USER}@${INSTANCE_IP} 'bash -s' <<EOF
+                                cd ${REPO_DIR}
+                                cat > .env <<EOT
 ${envContent}
 EOT
-                            chmod 600 .env
+                                chmod 600 .env
 EOF
-                        """
+                            """
+                        }
                     }
                 }
             }
         }
-
-
-        stage('Write second .env via SSH') {
-            steps {
-                withCredentials([
-                    file(credentialsId: 'mlops-ssh-key', variable: 'PEM_PATH'),
-                    usernamePassword(credentialsId: 'mlflow-experiments-db-creds', usernameVariable: 'MYSQL_USER', passwordVariable: 'MYSQL_PASSWORD'),
-                    usernamePassword(credentialsId: 'mlflow-experiments-db-root-user-creds', usernameVariable: 'MYSQL_ROOT_USER', passwordVariable: 'MYSQL_ROOT_PASSWORD')
-                ]) {
-                    script {
-                        def envContent = """
-                            # Model file path
-                            SAVED_MODEL="../models/Logistic_Regression.pkl"
-
-                            # API Settings
-                            API_PORT=8000
-                            API_HOST="0.0.0.0"
-                            API_DEBUG="True"
-
-                            # Prediction Threshold
-                            PREDICTION_THRESHOLD=0.3
-
-                            # Security (for development only - change in production)
-                            SECRET_KEY="dev-only-secret-key-123"
-
-
-                            # MySQL Configuration
-                            DB_HOST=${INSTANCE_PRIVATE_IP}
-                            DB_PORT="3306"
-                            DB_NAME="stroke_predictions"
-                            DB_USER="root"
-                            DB_PASSWORD=${MYSQL_ROOT_PASSWORD}
-                        """.stripIndent().trim()
-
-                        sh """
-                            ssh -o StrictHostKeyChecking=no -i ${PEM_PATH} ${ec2_USER}@${INSTANCE_IP} 'bash -s' <<EOF
-                            cd ${REPO_DIR}/fast_api
-                            cat <<EOT > .env
-${envContent}
-EOT
-                            chmod 600 .env
-EOF
-                        """
-                    }
-                }
-            }
-        }
-
-
 
 
 
@@ -406,6 +381,7 @@ EOF
                                 cd ${REPO_DIR}
 
                                 sudo bash run.sh
+
                             '
                         """
                     }

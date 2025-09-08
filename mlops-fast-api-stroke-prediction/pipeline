@@ -98,13 +98,14 @@ pipeline {
                             aws ec2 authorize-security-group-ingress --region ${REGION} --group-id ${SECURITY_GROUP_ID} \
                             --ip-permissions '[
                                 {"IpProtocol": "tcp", "FromPort": 22, "ToPort": 22, "IpRanges": [{"CidrIp": "54.236.64.223/32"}]},
-                                {"IpProtocol": "tcp", "FromPort": 22, "ToPort": 22, "IpRanges": [{"CidrIp": "3.82.125.25/32"}]},
+                                {"IpProtocol": "tcp", "FromPort": 22, "ToPort": 22, "IpRanges": [{"CidrIp": "3.93.149.88/32"}]},
                                 {"IpProtocol": "tcp", "FromPort": 22, "ToPort": 22, "IpRanges": [{"CidrIp": "44.212.42.254/32"}]},
                                 {"IpProtocol": "tcp", "FromPort": 80, "ToPort": 80, "IpRanges": [{"CidrIp": "54.236.64.223/32"}]},
                                 {"IpProtocol": "tcp", "FromPort": 443, "ToPort": 443, "IpRanges": [{"CidrIp": "54.236.64.223/32"}]},
                                 {"IpProtocol": "tcp", "FromPort": 8000, "ToPort": 8000, "IpRanges": [{"CidrIp": "44.212.42.254/32"}]},
                                 {"IpProtocol": "tcp", "FromPort": 8000, "ToPort": 8000, "IpRanges": [{"CidrIp": "54.236.64.223/32"}]},
-                                {"IpProtocol": "tcp", "FromPort": 8000, "ToPort": 8000, "IpRanges": [{"CidrIp": "3.82.125.25/32"}]}
+                                {"IpProtocol": "tcp", "FromPort": 8000, "ToPort": 8000, "IpRanges": [{"CidrIp": "3.82.125.25/32"}]},
+                                {"IpProtocol": "tcp", "FromPort": 9090, "ToPort": 9090, "IpRanges": [{"CidrIp": "3.91.20.155/32",  "Description": "Access from grafana monitoring server"}]}
                             ]'
                         """
                     }
@@ -269,6 +270,45 @@ pipeline {
                                 sudo apt install mysql-client -y                               
                             
                         """ // Ignore failure to keep pipeline alive
+                    }
+                }
+            }
+        }
+
+
+        stage('Prometheus & Node Exporter installation') {
+            steps {
+                withCredentials([file(credentialsId: 'mlops-ssh-key', variable: 'PEM_PATH')]) {
+                    script {
+
+                        env.REPO_DIR="grafana-prometheus-server-monitoring"
+
+                        echo "🔐 Connecting via SSH and cloning Git repository..."
+                        sh """
+                            ssh -o StrictHostKeyChecking=no -i ${PEM_PATH} ${ec2_USER}@${INSTANCE_IP} '
+                                set -e
+                                
+                                REPO_URL="https://github.com/ThatoK3/grafana-prometheus-server-monitoring.git"
+                                
+
+                                if [ ! -d "${REPO_DIR}" ]; then
+                                    echo "📥 Cloning repository..."
+                                    git clone \$REPO_URL
+                                else
+                                    echo "✅ Repo already cloned."
+                                fi
+
+                                if [ -d "${REPO_DIR}/.git" ]; then
+                                    echo "📁 Changing to repo directory, verifying and installing Prometheus..."
+                                    cd ${REPO_DIR}
+                                    git status
+                                    sudo bash install_prometheus.sh
+                                else
+                                    echo "❌ Repository clone failed or installation invalid."
+                                    exit 1
+                                fi
+                            '
+                        """
                     }
                 }
             }

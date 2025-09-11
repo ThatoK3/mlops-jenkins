@@ -102,6 +102,7 @@ pipeline {
                                 {"IpProtocol": "tcp", "FromPort": 22, "ToPort": 22, "IpRanges": [{"CidrIp": "44.212.42.254/32"}]},
                                 {"IpProtocol": "tcp", "FromPort": 80, "ToPort": 80, "IpRanges": [{"CidrIp": "54.236.64.223/32"}]},
                                 {"IpProtocol": "tcp", "FromPort": 443, "ToPort": 443, "IpRanges": [{"CidrIp": "54.236.64.223/32"}]},
+                                {"IpProtocol": "tcp", "FromPort": 8000, "ToPort": 8000, "IpRanges": [{"CidrIp": "3.93.149.88/32"}]},
                                 {"IpProtocol": "tcp", "FromPort": 8000, "ToPort": 8000, "IpRanges": [{"CidrIp": "44.212.42.254/32"}]},
                                 {"IpProtocol": "tcp", "FromPort": 8000, "ToPort": 8000, "IpRanges": [{"CidrIp": "54.236.64.223/32"}]},
                                 {"IpProtocol": "tcp", "FromPort": 8000, "ToPort": 8000, "IpRanges": [{"CidrIp": "3.82.125.25/32"}]},
@@ -190,34 +191,38 @@ pipeline {
                 withCredentials([file(credentialsId: 'mlops-ssh-key', variable: 'PEM_PATH')]) {
                     script {
                         echo "🔐 Installing Docker on remote EC2..."
-                        sh """
-                            chmod 400 ${PEM_PATH}
-                            ssh -o StrictHostKeyChecking=no -i ${PEM_PATH} ${ec2_USER}@${INSTANCE_IP} << 'EOF'
-                                set -e
-                                echo "📦 Installing Docker..."
+                        retry(5) {
+                            sleep(time: 10, unit: 'SECONDS')
+                            sh """
+                                chmod 400 ${PEM_PATH}
+                                ssh -o StrictHostKeyChecking=no -i ${PEM_PATH} ${ec2_USER}@${INSTANCE_IP} << 'EOF'
+                                    set -e
+                                    echo "📦 Installing Docker..."
 
-                                sudo apt remove -y docker docker-engine docker.io containerd runc || true
-                                sudo apt update
-                                sudo apt install -y ca-certificates curl gnupg lsb-release
+                                    sudo apt remove -y docker docker-engine docker.io containerd runc || true
+                                    sudo apt update
+                                    sudo apt install -y ca-certificates curl gnupg lsb-release
 
-                                sudo mkdir -p /etc/apt/keyrings
-                                curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+                                    sudo mkdir -p /etc/apt/keyrings
+                                    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
 
-                                echo "deb [arch=\$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \$(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+                                    echo "deb [arch=\$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \$(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
 
-                                sudo apt update
-                                sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+                                    sudo apt update
+                                    sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 
-                                sudo systemctl enable docker
-                                sudo systemctl start docker
+                                    sudo systemctl enable docker
+                                    sudo systemctl start docker
 
-                                sudo groupadd docker || true
-                                sudo usermod -aG docker "\$USER"
+                                    sudo groupadd docker || true
+                                    sudo usermod -aG docker "\$USER"
 
-                                echo "✅ Docker installed. Rebooting..."
-                                sudo reboot
-                            
-                        """ // Ignore failure to keep pipeline alive
+                                    echo "✅ Docker installed. Rebooting..."
+                                    sudo reboot
+                                
+                            """ 
+                        }
+                        
                     }
                 }
             }
@@ -360,7 +365,8 @@ pipeline {
                 withCredentials([
                     file(credentialsId: 'mlops-ssh-key', variable: 'PEM_PATH'),
                     usernamePassword(credentialsId: 'mlflow-experiments-db-creds', usernameVariable: 'MYSQL_USER', passwordVariable: 'MYSQL_PASSWORD'),
-                    usernamePassword(credentialsId: 'mlflow-experiments-db-root-user-creds', usernameVariable: 'MYSQL_ROOT_USER', passwordVariable: 'MYSQL_ROOT_PASSWORD')
+                    usernamePassword(credentialsId: 'mlflow-experiments-db-root-user-creds', usernameVariable: 'MYSQL_ROOT_USER', passwordVariable: 'MYSQL_ROOT_PASSWORD'),
+                    usernamePassword(credentialsId: 'aws-mssql-db-stroke-pred-api-v1', usernameVariable: 'MSSQL_USER', passwordVariable: 'MSSQL_PASSWORD')
                 ]) {
                     withAWS(region: 'us-east-1', credentials: 'aws-jenkins-creds') {
                         script {
@@ -373,14 +379,26 @@ pipeline {
 MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
 MYSQL_USER=${MYSQL_USER}
 MYSQL_PASSWORD=${MYSQL_PASSWORD}
-MYSQL_HOST=${INSTANCE_PRIVATE_IP}
+MYSQL_HOST=mysql
 MYSQL_PORT=3306
-MYSQL_DB_NAME=stroke_predictions
+MYSQL_DATABASE=stroke_predictions
+MYSQL_SERVER_ID=184054
+MYSQL_SERVER_NAME=dbserver1
+
+# MSSQL
+MSSQL_HOST=stroke-pred-api-v1.c0lswie66uam.us-east-1.rds.amazonaws.com
+MSSQL_PORT=1433
+MSSQL_DB=stroke_predictions_sink
+MSSQL_USER=${MSSQL_USER}
+MSSQL_PASSWORD="${MSSQL_PASSWORD}"
 
 # AWS creds
 AWS_ACCESS_KEY_ID=${awsAccessKey}
 AWS_SECRET_ACCESS_KEY=${awsSecretKey}
 AWS_DEFAULT_REGION=us-east-1
+AWS_REGION=us-east-1
+SCHEMA_REGISTRY_URL=http://schema-registry:8081
+S3_BUCKET=mlops-dbz-sink
 
 # Paths (relative to project root)
 JDBC_SINK_JARS=./kconnect-jdbc-sink-jars
@@ -390,6 +408,8 @@ FAST_API=./fast_api
 MODELS=./models
 NOTEBOOKS=./notebooks
 SAVED_MODEL=./models/Logistic_Regression.pkl
+
+INSTANCE_PRIVATE_IP=${INSTANCE_PRIVATE_IP}
         """.stripIndent().trim()
 
                             sh """
@@ -409,25 +429,121 @@ EOF
 
 
 
-        stage('SSH and Run  fast api') {
+        stage('SSH and Run docker compose') {
             steps {
                 withCredentials([file(credentialsId: 'mlops-ssh-key', variable: 'PEM_PATH')]) {
                     script {
-                        echo "🔐 Connecting via SSH and running fast api..."
-                        sh """
-                            ssh -o StrictHostKeyChecking=no -i ${PEM_PATH} ${ec2_USER}@${INSTANCE_IP} '
-                                set -e
-
-                                cd ${REPO_DIR}
-
-                                sudo bash run.sh
-
-                            '
-                        """
+                        echo "🔐 Connecting via SSH and docker compose..."
+                        retry(3) {
+                            sleep(time: 10, unit: 'SECONDS')
+                            sh """
+                                ssh -o StrictHostKeyChecking=no -i ${PEM_PATH} ${ec2_USER}@${INSTANCE_IP} '
+                                    set -e
+                                    cd ${REPO_DIR}
+                                    docker compose down
+                                    docker compose --env-file .env up -d --build
+                                '
+                            """
+                        }
                     }
                 }
             }
         }
+
+        
+        stage('SSH and Run upload db data') {
+            steps {
+                withCredentials([file(credentialsId: 'mlops-ssh-key', variable: 'PEM_PATH')]) {
+                    script {
+                        echo "🔐 Connecting via SSH and uploading db data..."
+                        retry(10) {
+                            sleep(time: 45, unit: 'SECONDS')
+                            sh """
+                                ssh -o StrictHostKeyChecking=no -i ${PEM_PATH} ${ec2_USER}@${INSTANCE_IP} '
+                                    cd ${REPO_DIR}
+                                    bash upload_db_data.sh
+                                '
+                            """
+                        }
+                    }
+                }
+            }
+        }
+
+
+        stage('SSH and Run register mysql source db connector') {
+            steps {
+                withCredentials([file(credentialsId: 'mlops-ssh-key', variable: 'PEM_PATH')]) {
+                    script {
+                        echo "🔐 Connecting via SSH and registering mysql source db data to kafta..."
+                        retry(3) {
+                            sleep(time: 10, unit: 'SECONDS')
+                            sh """
+                                ssh -o StrictHostKeyChecking=no -i ${PEM_PATH} ${ec2_USER}@${INSTANCE_IP} '
+                                    set -e
+                                    cd ${REPO_DIR}
+                                    bash dbz-register-mysql-source.sh
+
+                                    sleep 30s
+                                    curl -s http://localhost:8083/connectors/stroke-predictions-connector/status | jq
+                                '
+                            """
+                        }
+                    }
+                }
+            }
+        }
+
+
+
+        stage('SSH and Run register mssql sink db connector') {
+            steps {
+                withCredentials([file(credentialsId: 'mlops-ssh-key', variable: 'PEM_PATH')]) {
+                    script {
+                        echo "🔐 Connecting via SSH and registering mssql sink db connector to kafta..."
+                        retry(3) {
+                            sleep(time: 10, unit: 'SECONDS')
+                            sh """
+                                ssh -o StrictHostKeyChecking=no -i ${PEM_PATH} ${ec2_USER}@${INSTANCE_IP} '
+                                    set -e
+                                    cd ${REPO_DIR}
+                                    bash dbz-register-mysql-source.sh
+
+                                    sleep 30s
+                                    curl -s http://localhost:8083/connectors/mssql-sink-predictions/status | jq
+                                '
+                            """
+                        }
+                    }
+                }
+            }
+        }
+
+
+
+        stage('SSH and Run register s3 topics sink connector') {
+            steps {
+                withCredentials([file(credentialsId: 'mlops-ssh-key', variable: 'PEM_PATH')]) {
+                    script {
+                        echo "🔐 Connecting via SSH and registering s3 topics sink connector..."
+                        retry(3) {
+                            sleep(time: 10, unit: 'SECONDS')
+                            sh """
+                                ssh -o StrictHostKeyChecking=no -i ${PEM_PATH} ${ec2_USER}@${INSTANCE_IP} '
+                                    cd ${REPO_DIR}
+                                    source .env
+                                    bash register-s3-sink.sh
+
+                                    sleep 30s
+                                    curl -s http://localhost:8083/connectors/s3-sink-stroke-predictions/status | jq
+                                '
+                            """
+                        }
+                    }
+                }
+            }
+        }
+
 
 
         stage('Check fast api Availability') {
@@ -439,8 +555,8 @@ EOF
 
                     echo "🔍 Checking if ${SERVICE_NAME} at ${targetUrl} is reachable..."
 
-                    retry(5) {
-                        sleep(time: 5, unit: 'SECONDS')
+                    retry(10) {
+                        sleep(time: 45, unit: 'SECONDS')
                         sh """
                             STATUS_CODE=\$(curl -o /dev/null -s -w "%{http_code}" --max-time 5 ${targetUrl})
                             if [ "\$STATUS_CODE" != "200" ]; then
@@ -456,26 +572,6 @@ EOF
 
 
 
-        stage('SSH and Upload backed up db data') {
-            steps {
-                withCredentials([file(credentialsId: 'mlops-ssh-key', variable: 'PEM_PATH')]) {
-                    script {
-                        echo "Uloading data..."
-                        sh """
-                            ssh -o StrictHostKeyChecking=no -i ${PEM_PATH} ${ec2_USER}@${INSTANCE_IP} '
-                                cd ${REPO_DIR}
-                                echo "To be replaced by db upload script"
-                                exit
-                            '
-                        """
-                    }
-                }
-            }
-        }
-
-
-
-
     }
 
     post {
@@ -487,3 +583,4 @@ EOF
         }
     }
 }
+

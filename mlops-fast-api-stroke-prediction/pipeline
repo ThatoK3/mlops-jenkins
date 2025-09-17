@@ -192,9 +192,8 @@ pipeline {
                     script {
                         echo "🔐 Installing Docker on remote EC2..."
                         retry(5) {
-                            sleep(time: 10, unit: 'SECONDS')
+                            sleep 10
                             sh """
-                                chmod 400 ${PEM_PATH}
                                 ssh -o StrictHostKeyChecking=no -i ${PEM_PATH} ${ec2_USER}@${INSTANCE_IP} << 'EOF'
                                     set -e
                                     echo "📦 Installing Docker..."
@@ -219,10 +218,9 @@ pipeline {
 
                                     echo "✅ Docker installed. Rebooting..."
                                     sudo reboot
-                                
-                            """ 
+EOF
+                            """
                         }
-                        
                     }
                 }
             }
@@ -234,7 +232,7 @@ pipeline {
                     script {
                         echo "⌛ Waiting for instance to reboot and become reachable..."
                         retry(10) {
-                            sleep(time: 20, unit: 'SECONDS')
+                            sleep 20
                             sh """
                                 ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -i ${PEM_PATH} ${ec2_USER}@${INSTANCE_IP} 'echo "✅ Server is back online!"'
                             """
@@ -243,7 +241,6 @@ pipeline {
                 }
             }
         }
-
 
         stage('SSH and Test') {
             steps {
@@ -254,14 +251,12 @@ pipeline {
                             ssh -o StrictHostKeyChecking=no -i ${PEM_PATH} ${ec2_USER}@${INSTANCE_IP} '
                                 echo "✅ Docker Version:"
                                 docker --version
-                                exit
                             '
                         """
                     }
                 }
             }
         }
-
 
         stage('Install mysql client') {
             steps {
@@ -272,22 +267,19 @@ pipeline {
                             ssh -o StrictHostKeyChecking=no -i ${PEM_PATH} ${ec2_USER}@${INSTANCE_IP} << 'EOF'
                                 set -e
                                 echo "📦 Installing mysql-client..."
-                                sudo apt install mysql-client -y                               
-                            
-                        """ // Ignore failure to keep pipeline alive
+                                sudo apt install mysql-client -y
+EOF
+                        """
                     }
                 }
             }
         }
 
-
         stage('Prometheus & Node Exporter installation') {
             steps {
                 withCredentials([file(credentialsId: 'mlops-ssh-key', variable: 'PEM_PATH')]) {
                     script {
-
                         env.REPO_DIR="grafana-prometheus-server-monitoring"
-
                         echo "🔐 Connecting via SSH and cloning Git repository..."
                         sh """
                             ssh -o StrictHostKeyChecking=no -i ${PEM_PATH} ${ec2_USER}@${INSTANCE_IP} '
@@ -295,7 +287,6 @@ pipeline {
                                 
                                 REPO_URL="https://github.com/ThatoK3/grafana-prometheus-server-monitoring.git"
                                 
-
                                 if [ ! -d "${REPO_DIR}" ]; then
                                     echo "📥 Cloning repository..."
                                     git clone \$REPO_URL
@@ -319,14 +310,11 @@ pipeline {
             }
         }
 
-
-        stage('SSH and Git Clone') {
+        stage('Clone MLOps Fast API Repo') {
             steps {
                 withCredentials([file(credentialsId: 'mlops-ssh-key', variable: 'PEM_PATH')]) {
                     script {
-
                         env.REPO_DIR="mlops-fast-api-prod"
-
                         echo "🔐 Connecting via SSH and cloning Git repository..."
                         sh """
                             ssh -o StrictHostKeyChecking=no -i ${PEM_PATH} ${ec2_USER}@${INSTANCE_IP} '
@@ -334,7 +322,6 @@ pipeline {
                                 
                                 REPO_URL="https://github.com/ThatoK3/mlops-fast-api-prod.git"
                                 
-
                                 if [ ! -d "${REPO_DIR}" ]; then
                                     echo "📥 Cloning repository..."
                                     git clone \$REPO_URL
@@ -357,9 +344,6 @@ pipeline {
             }
         }
 
-
-
-
         stage('Write .env via SSH') {
             steps {
                 withCredentials([
@@ -370,7 +354,6 @@ pipeline {
                 ]) {
                     withAWS(region: 'us-east-1', credentials: 'aws-jenkins-creds') {
                         script {
-                            // Get AWS credentials from environment variables provided by withAWS
                             def awsAccessKey = env.AWS_ACCESS_KEY_ID ?: ''
                             def awsSecretKey = env.AWS_SECRET_ACCESS_KEY ?: ''
                             
@@ -410,7 +393,7 @@ NOTEBOOKS=./notebooks
 SAVED_MODEL=./models/Logistic_Regression.pkl
 
 INSTANCE_PRIVATE_IP=${INSTANCE_PRIVATE_IP}
-        """.stripIndent().trim()
+""".stripIndent().trim()
 
                             sh """
                                 ssh -o StrictHostKeyChecking=no -i ${PEM_PATH} ${ec2_USER}@${INSTANCE_IP} 'bash -s' <<EOF
@@ -427,15 +410,13 @@ EOF
             }
         }
 
-
-
         stage('SSH and Run docker compose') {
             steps {
                 withCredentials([file(credentialsId: 'mlops-ssh-key', variable: 'PEM_PATH')]) {
                     script {
                         echo "🔐 Connecting via SSH and docker compose..."
                         retry(3) {
-                            sleep(time: 10, unit: 'SECONDS')
+                            sleep 10
                             sh """
                                 ssh -o StrictHostKeyChecking=no -i ${PEM_PATH} ${ec2_USER}@${INSTANCE_IP} '
                                     set -e
@@ -450,14 +431,13 @@ EOF
             }
         }
 
-        
         stage('SSH and Run upload db data') {
             steps {
                 withCredentials([file(credentialsId: 'mlops-ssh-key', variable: 'PEM_PATH')]) {
                     script {
                         echo "🔐 Connecting via SSH and uploading db data..."
                         retry(10) {
-                            sleep(time: 45, unit: 'SECONDS')
+                            sleep 45
                             sh """
                                 ssh -o StrictHostKeyChecking=no -i ${PEM_PATH} ${ec2_USER}@${INSTANCE_IP} '
                                     cd ${REPO_DIR}
@@ -470,21 +450,20 @@ EOF
             }
         }
 
-
         stage('SSH and Run register mysql source db connector') {
             steps {
                 withCredentials([file(credentialsId: 'mlops-ssh-key', variable: 'PEM_PATH')]) {
                     script {
                         echo "🔐 Connecting via SSH and registering mysql source db data to kafta..."
                         retry(3) {
-                            sleep(time: 10, unit: 'SECONDS')
+                            sleep 10
                             sh """
                                 ssh -o StrictHostKeyChecking=no -i ${PEM_PATH} ${ec2_USER}@${INSTANCE_IP} '
                                     set -e
                                     cd ${REPO_DIR}
                                     bash dbz-register-mysql-source.sh
 
-                                    sleep 30s
+                                    sleep 30
                                     curl -s http://localhost:8083/connectors/stroke-predictions-connector/status | jq
                                 '
                             """
@@ -494,22 +473,20 @@ EOF
             }
         }
 
-
-
         stage('SSH and Run register mssql sink db connector') {
             steps {
                 withCredentials([file(credentialsId: 'mlops-ssh-key', variable: 'PEM_PATH')]) {
                     script {
                         echo "🔐 Connecting via SSH and registering mssql sink db connector to kafta..."
                         retry(3) {
-                            sleep(time: 10, unit: 'SECONDS')
+                            sleep 10
                             sh """
                                 ssh -o StrictHostKeyChecking=no -i ${PEM_PATH} ${ec2_USER}@${INSTANCE_IP} '
                                     set -e
                                     cd ${REPO_DIR}
-                                    bash dbz-register-mysql-source.sh
+                                    bash dbz-register-mssql-sink.sh
 
-                                    sleep 30s
+                                    sleep 30
                                     curl -s http://localhost:8083/connectors/mssql-sink-predictions/status | jq
                                 '
                             """
@@ -519,22 +496,20 @@ EOF
             }
         }
 
-
-
         stage('SSH and Run register s3 topics sink connector') {
             steps {
                 withCredentials([file(credentialsId: 'mlops-ssh-key', variable: 'PEM_PATH')]) {
                     script {
                         echo "🔐 Connecting via SSH and registering s3 topics sink connector..."
                         retry(3) {
-                            sleep(time: 10, unit: 'SECONDS')
+                            sleep 10
                             sh """
                                 ssh -o StrictHostKeyChecking=no -i ${PEM_PATH} ${ec2_USER}@${INSTANCE_IP} '
                                     cd ${REPO_DIR}
                                     source .env
-                                    bash register-s3-sink.sh
+                                    bash dbz-register-s3-sink.sh
 
-                                    sleep 30s
+                                    sleep 30
                                     curl -s http://localhost:8083/connectors/s3-sink-stroke-predictions/status | jq
                                 '
                             """
@@ -543,8 +518,6 @@ EOF
                 }
             }
         }
-
-
 
         stage('Check fast api Availability') {
             steps {
@@ -556,7 +529,7 @@ EOF
                     echo "🔍 Checking if ${SERVICE_NAME} at ${targetUrl} is reachable..."
 
                     retry(10) {
-                        sleep(time: 45, unit: 'SECONDS')
+                        sleep 45
                         sh """
                             STATUS_CODE=\$(curl -o /dev/null -s -w "%{http_code}" --max-time 5 ${targetUrl})
                             if [ "\$STATUS_CODE" != "200" ]; then
@@ -564,6 +537,117 @@ EOF
                                 exit 1
                             fi
                             echo "✅ ${SERVICE_NAME} is accessible (HTTP \$STATUS_CODE)"
+                        """
+                    }
+                }
+            }
+        }
+
+
+
+        stage('Configure Prometheus for Kafka Connect Monitoring') {
+            steps {
+                withCredentials([file(credentialsId: 'mlops-ssh-key', variable: 'PEM_PATH')]) {
+                    script {
+                        echo "🔧 Configuring Prometheus for Kafka Connect CDC monitoring..."
+                        sh """
+                            ssh -o StrictHostKeyChecking=no -i ${PEM_PATH} ${ec2_USER}@${INSTANCE_IP} '
+                                set -e
+                                
+                                echo "📦 Creating backup of current Prometheus config..."
+                                sudo cp /etc/prometheus/prometheus.yml /etc/prometheus/prometheus.yml.backup.\$(date +%Y%m%d_%H%M%S)
+                                
+                                echo "🔄 Updating Prometheus configuration for Kafka Connect..."
+                                cat > /tmp/prometheus_new.yml << \\EOF
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ['localhost:9090']
+
+  - job_name: node
+    static_configs:
+      - targets: ['localhost:9100']
+
+  # Kafka Connect CDC Metrics (Debezium) - PORT 9400
+  - job_name: 'kafka-connect-cdc'
+    scrape_interval: 15s
+    static_configs:
+      - targets: ['localhost:9400']
+        labels:
+          environment: 'production'
+          service: 'debezium-cdc'
+          host: 'cdc-server'
+
+EOF
+
+                                echo "✅ Validating new configuration..."
+                                if ! sudo promtool check config /tmp/prometheus_new.yml; then
+                                    echo "❌ Configuration validation failed!"
+                                    exit 1
+                                fi
+
+                                echo "📤 Applying new configuration..."
+                                sudo mv /tmp/prometheus_new.yml /etc/prometheus/prometheus.yml
+                                sudo chown prometheus:prometheus /etc/prometheus/prometheus.yml
+                                sudo chmod 644 /etc/prometheus/prometheus.yml
+
+                                echo "🔄 Reloading Prometheus..."
+                                if sudo systemctl reload prometheus 2>/dev/null; then
+                                    echo "✅ Prometheus reloaded via systemctl"
+                                elif curl -X POST http://localhost:9090/-/reload 2>/dev/null; then
+                                    echo "✅ Prometheus reloaded via HTTP API"
+                                else
+                                    echo "⚠️  Reload failed, restarting Prometheus..."
+                                    sudo systemctl restart prometheus
+                                fi
+
+                                echo "🎉 Prometheus configuration updated for Kafka Connect CDC!"
+                                echo "📊 Metrics available at: http://localhost:9090/targets"
+                            '
+                        """
+                    }
+                }
+            }
+        }
+
+
+
+
+        stage('Verify Monitoring Setup') {
+            steps {
+                withCredentials([file(credentialsId: 'mlops-ssh-key', variable: 'PEM_PATH')]) {
+                    script {
+                        echo "🔍 Verifying monitoring setup..."
+                        sh """
+                            ssh -o StrictHostKeyChecking=no -i ${PEM_PATH} ${ec2_USER}@${INSTANCE_IP} '
+                                set -e
+                                
+                                echo "📋 Checking Prometheus targets..."
+                                echo "----------------------------------------"
+                                curl -s http://localhost:9090/api/v1/targets | jq -r \'.data.activeTargets[] | .scrapeUrl + " - " + .health\'
+                                
+                                echo ""
+                                echo "📊 Checking Kafka Connect metrics..."
+                                echo "----------------------------------------"
+                                CONNECT_METRICS=\$(curl -s http://localhost:9400/metrics | head -20)
+                                if echo "\$CONNECT_METRICS" | grep -q "kafka_connect"; then
+                                    echo "✅ Kafka Connect metrics found!"
+                                    echo "\$CONNECT_METRICS" | grep "kafka_connect" | head -5
+                                else
+                                    echo "❌ No Kafka Connect metrics found on port 9400"
+                                    exit 1
+                                fi
+                                
+                                echo ""
+                                echo "🎯 Monitoring endpoints:"
+                                echo "----------------------------------------"
+                                echo "Prometheus UI:    http://${INSTANCE_IP}:9090"
+                                echo "Grafana UI:       http://grafanaip:3000"
+                                echo "Connect Metrics:  http://${INSTANCE_IP}:9400/metrics"
+                            '
                         """
                     }
                 }
@@ -583,4 +667,3 @@ EOF
         }
     }
 }
-
